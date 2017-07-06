@@ -108,6 +108,53 @@ export function readConfiguration(
   return {parsed, ngOptions};
 }
 
+export function performCompilation(
+    basePath: string, config: {parsed: ts.ParsedCommandLine, ngOptions: any},
+    tsCompilerHost?: ts.CompilerHost) {
+  const {parsed, ngOptions} = config;
+  ngOptions.basePath = basePath;
+
+  let host = (tsCompilerHost) ? tsCompilerHost : ts.createCompilerHost(parsed.options, true);
+
+  const rootFileNames = parsed.fileNames.slice(0);
+
+  const addGeneratedFileName =
+      (fileName: string) => {
+        if (fileName.startsWith(basePath) && TS_EXT.exec(fileName)) {
+          rootFileNames.push(fileName);
+        }
+      }
+
+  if (ngOptions.flatModuleOutFile && !ngOptions.skipMetadataEmit) {
+    const {host: bundleHost, indexName, errors} =
+        createBundleIndexHost(ngOptions, rootFileNames, host);
+    if (errors) check(basePath, errors);
+    if (indexName) addGeneratedFileName(indexName);
+    host = bundleHost;
+  }
+
+  const ngHost = ng.createHost({tsHost: host, options: ngOptions});
+
+  const ngProgram = ng.createProgram({rootNames: rootFileNames, host: ngHost, options: ngOptions});
+
+  // Check parameter diagnostics
+  check(basePath, ngProgram.getTsOptionDiagnostics(), ngProgram.getNgOptionDiagnostics());
+
+  // Check syntactic diagnostics
+  check(basePath, ngProgram.getTsSyntacticDiagnostics());
+
+  // Check TypeScript semantic and Angular structure diagnostics
+  check(basePath, ngProgram.getTsSemanticDiagnostics(), ngProgram.getNgStructuralDiagnostics());
+
+  // Check Angular semantic diagnostics
+  check(basePath, ngProgram.getNgSemanticDiagnostics());
+
+  ngProgram.emit({
+    emitFlags: api.EmitFlags.Default |
+        ((ngOptions.skipMetadataEmit || ngOptions.flatModuleOutFile) ? 0 : api.EmitFlags.Metadata)
+  });
+}
+
 export function main(args: string[], consoleError: (s: string) => void = console.error): number {
   try {
     const parsedArgs = require('minimist')(args);
@@ -119,49 +166,8 @@ export function main(args: string[], consoleError: (s: string) => void = console
     // file names in tsconfig are resolved relative to this absolute path
     const basePath = path.resolve(process.cwd(), projectDir);
 
-    const {parsed, ngOptions} = readConfiguration(project, basePath);
-    ngOptions.basePath = basePath;
+    performCompilation(basePath, readConfiguration(project, basePath));
 
-    let host = ts.createCompilerHost(parsed.options, true);
-
-    const rootFileNames = parsed.fileNames.slice(0);
-
-    const addGeneratedFileName =
-        (fileName: string) => {
-          if (fileName.startsWith(basePath) && TS_EXT.exec(fileName)) {
-            rootFileNames.push(fileName);
-          }
-        }
-
-    if (ngOptions.flatModuleOutFile && !ngOptions.skipMetadataEmit) {
-      const {host: bundleHost, indexName, errors} =
-          createBundleIndexHost(ngOptions, rootFileNames, host);
-      if (errors) check(basePath, errors);
-      if (indexName) addGeneratedFileName(indexName);
-      host = bundleHost;
-    }
-
-    const ngHost = ng.createHost({tsHost: host, options: ngOptions});
-
-    const ngProgram =
-        ng.createProgram({rootNames: rootFileNames, host: ngHost, options: ngOptions});
-
-    // Check parameter diagnostics
-    check(basePath, ngProgram.getTsOptionDiagnostics(), ngProgram.getNgOptionDiagnostics());
-
-    // Check syntactic diagnostics
-    check(basePath, ngProgram.getTsSyntacticDiagnostics());
-
-    // Check TypeScript semantic and Angular structure diagnostics
-    check(basePath, ngProgram.getTsSemanticDiagnostics(), ngProgram.getNgStructuralDiagnostics());
-
-    // Check Angular semantic diagnostics
-    check(basePath, ngProgram.getNgSemanticDiagnostics());
-
-    ngProgram.emit({
-      emitFlags: api.EmitFlags.Default |
-          ((ngOptions.skipMetadataEmit || ngOptions.flatModuleOutFile) ? 0 : api.EmitFlags.Metadata)
-    });
   } catch (e) {
     if (isSyntaxError(e)) {
       consoleError(e.message);
